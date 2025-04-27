@@ -296,6 +296,29 @@ def image_to_ascii(image, width=40, height=20):
     
     return ascii_str
 
+def rotate_points(xy, angle):
+    """Rotate points around the origin by given angle in radians"""
+    cos_angle = np.cos(angle)
+    sin_angle = np.sin(angle)
+    rotation_matrix = np.array([[cos_angle, -sin_angle], [sin_angle, cos_angle]])
+    return np.dot(xy, rotation_matrix)
+
+def find_optimal_rotation(x, y, num_angles=36):
+    """Find the rotation angle that maximizes the track's dimensions"""
+    angles = np.linspace(0, np.pi, num_angles)
+    max_dimension = 0
+    best_angle = 0
+    
+    for angle in angles:
+        rotated = rotate_points(np.column_stack((x, y)), angle)
+        x_rot, y_rot = rotated[:, 0], rotated[:, 1]
+        dimension = (x_rot.max() - x_rot.min()) * (y_rot.max() - y_rot.min())
+        if dimension > max_dimension:
+            max_dimension = dimension
+            best_angle = angle
+            
+    return best_angle
+
 def create_track_map(event):
     """Create a track map visualization for the given event"""
     try:
@@ -314,11 +337,6 @@ def create_track_map(event):
         if pos is None:
             raise Exception("No position data available")
             
-        # Get circuit info for rotation
-        circuit = session.get_circuit_info()
-        if circuit is None:
-            raise Exception("Could not get circuit information")
-            
         # Get track coordinates from position data
         x = pos['X'].to_numpy()
         y = pos['Y'].to_numpy()
@@ -331,28 +349,21 @@ def create_track_map(event):
         image = Image.new('1', (width, height), 1)  # 1 for white background
         draw = ImageDraw.Draw(image)
         
-        # Find the center of the track points
-        x_center = (x.max() + x.min()) / 2
-        y_center = (y.max() + y.min()) / 2
+        # Calculate the range of coordinates
+        x_range = x.max() - x.min()
+        y_range = y.max() - y.min()
         
-        # Calculate the maximum distance from center to any point
-        max_dist = max(
-            max(abs(x - x_center)),
-            max(abs(y - y_center))
-        )
-        
-        # Scale to fit the image while maintaining aspect ratio
-        scale = min(
-            (width - 10) / (2 * max_dist),
-            (height - 10) / (2 * max_dist)
-        )
+        # Calculate scaling factors
+        x_scale = (width - 2) / x_range  # Leave 1 pixel margin on each side
+        y_scale = (height - 2) / y_range  # Leave 1 pixel margin on each side
+        scale = min(x_scale, y_scale)
         
         # Draw the track
         points = []
         for i in range(len(x)):
-            # Center the points around the image center
-            px = int((x[i] - x_center) * scale + width/2)
-            py = int((y[i] - y_center) * scale + height/2)
+            # Scale the points to fit the image
+            px = int((x[i] - x.min()) * scale + 1)  # Add 1 pixel margin
+            py = int((y[i] - y.min()) * scale + 1)  # Add 1 pixel margin
             points.append((px, py))
         
         # Draw the track line
