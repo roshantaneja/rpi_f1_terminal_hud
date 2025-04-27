@@ -1,4 +1,7 @@
 import fastf1
+import matplotlib.pyplot as plt
+import io
+from PIL import Image, ImageDraw
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -7,6 +10,8 @@ from rich.live import Live
 import pandas as pd
 from datetime import datetime, timezone
 import time
+import numpy as np
+from matplotlib.collections import LineCollection
 
 # Enable FastF1 cache
 fastf1.Cache.enable_cache('cache')
@@ -14,15 +19,18 @@ fastf1.Cache.enable_cache('cache')
 # Team color mapping
 TEAM_COLORS = {
     'Red Bull Racing': '#0600ef',  # Red Bull blue
+    'Red Bull': '#0600ef',         # Red Bull blue
     'Ferrari': '#dc0000',          # Ferrari red
     'Mercedes': '#00d2be',         # Mercedes teal
     'McLaren': '#ff8700',          # McLaren orange
     'Aston Martin': '#006f62',     # Aston Martin green
     'Alpine': '#0090ff',           # Alpine blue
+    'Alpine F1 Team': '#0090ff',   # Alpine blue
     'Williams': '#005aff',         # Williams blue
-    'Haas F1 Team': '#ffffff',     # Haas white
+    'Haas F1 Team': '#E6002B',     # Haas red
     'Kick Sauber': '#52e252',      # Sauber green
-    'RB': '#6692ff',              # RB blue
+    'Sauber': '#52e252',           # Sauber green
+    'RB': '#6692ff',               # RB blue
 }
 
 def get_team_color(team_name):
@@ -265,6 +273,109 @@ def create_calendar_table(calendar, current_event):
     
     return table
 
+def image_to_ascii(image, width=40, height=20):
+    """Convert an image to ASCII art with specified dimensions"""
+    # Resize image to desired dimensions
+    image = image.resize((width, height))
+    
+    # Convert to grayscale
+    image = image.convert('L')
+    
+    # ASCII characters from darkest to lightest
+    ascii_chars = " .:-=+*#%@"
+    
+    # Convert each pixel to ASCII character
+    pixels = image.getdata()
+    ascii_str = ""
+    for i, pixel in enumerate(pixels):
+        # Map pixel value (0-255) to ASCII character index
+        char_index = int(pixel / 255 * (len(ascii_chars) - 1))
+        ascii_str += ascii_chars[char_index]
+        if (i + 1) % width == 0:
+            ascii_str += "\n"
+    
+    return ascii_str
+
+def create_track_map(event):
+    """Create a track map visualization for the given event"""
+    try:
+        # Get the session data
+        session = fastf1.get_session(event.year, event.RoundNumber, 'R')
+        # Load the session data with all required information
+        session.load(telemetry=True, laps=True, weather=False, messages=False)
+        
+        # Get the fastest lap
+        lap = session.laps.pick_fastest()
+        if lap is None:
+            raise Exception("No lap data available")
+            
+        # Get position data from the lap
+        pos = lap.get_pos_data()
+        if pos is None:
+            raise Exception("No position data available")
+            
+        # Get circuit info for rotation
+        circuit = session.get_circuit_info()
+        if circuit is None:
+            raise Exception("Could not get circuit information")
+            
+        # Get track coordinates from position data
+        x = pos['X'].to_numpy()
+        y = pos['Y'].to_numpy()
+        
+        if len(x) == 0 or len(y) == 0:
+            raise Exception("No track coordinates available")
+            
+        # Create a PIL image
+        width, height = 80, 40  # ASCII art dimensions
+        image = Image.new('1', (width, height), 1)  # 1 for white background
+        draw = ImageDraw.Draw(image)
+        
+        # Find the center of the track points
+        x_center = (x.max() + x.min()) / 2
+        y_center = (y.max() + y.min()) / 2
+        
+        # Calculate the maximum distance from center to any point
+        max_dist = max(
+            max(abs(x - x_center)),
+            max(abs(y - y_center))
+        )
+        
+        # Scale to fit the image while maintaining aspect ratio
+        scale = min(
+            (width - 10) / (2 * max_dist),
+            (height - 10) / (2 * max_dist)
+        )
+        
+        # Draw the track
+        points = []
+        for i in range(len(x)):
+            # Center the points around the image center
+            px = int((x[i] - x_center) * scale + width/2)
+            py = int((y[i] - y_center) * scale + height/2)
+            points.append((px, py))
+        
+        # Draw the track line
+        if len(points) > 1:
+            draw.line(points, fill=0, width=1)  # 0 for black line
+        
+        # Convert to ASCII art
+        ascii_art = []
+        for y in range(height):
+            line = []
+            for x in range(width):
+                if image.getpixel((x, y)) == 0:  # Black pixel
+                    line.append('#')
+                else:  # White pixel
+                    line.append(' ')
+            ascii_art.append(''.join(line))
+        
+        return '\n'.join(ascii_art)
+        
+    except Exception as e:
+        print(f"Error creating track map: {str(e)}")  # Debug print
+        raise  # Re-raise the exception to be caught by the main function
+
 def main():
     console = Console()
     
@@ -288,9 +399,17 @@ def main():
         # Create header with practice sessions
         header_layout = Layout()
         header_layout.split_row(
-            Layout(name="calendar"),
-            Layout(name="practice_sessions")
+            Layout(name="left_header", ratio=2),
+            Layout(name="practice_sessions", ratio=3)
         )
+        
+        # Split left header into calendar and track map
+        left_header = Layout()
+        left_header.split_row(
+            Layout(name="calendar"),
+            Layout(name="track_map")
+        )
+        
         practice_layout = Layout()
         practice_layout.split_row(
             Layout(name="fp1"),
@@ -301,8 +420,21 @@ def main():
         # Create calendar
         calendar = get_race_calendar(event)
         calendar_table = create_calendar_table(calendar, event)
-        header_layout["calendar"].update(Panel(calendar_table))
+        left_header["calendar"].update(Panel(calendar_table))
         
+        # Create track map
+        try:
+            track_map = create_track_map(event)
+            # Add some padding around the ASCII art
+            track_map_str = "\n" + track_map + "\n"
+            left_header["track_map"].update(Panel(track_map_str, title=f"Circuit: {event.Location}"))
+        except Exception as e:
+            error_msg = f"[red]No track map available[/red]\n[yellow]Error: {str(e)}[/yellow]"
+            left_header["track_map"].update(Panel(error_msg, title=f"Circuit: {event.Location}"))
+        
+        # Update left header in main header layout
+        header_layout["left_header"].update(left_header)
+
         # Get session data
         try:
             fp1 = get_session_data(event, 'FP1')
